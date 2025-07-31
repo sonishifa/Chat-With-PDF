@@ -1,108 +1,110 @@
 import os
 import uuid
-import fitz  # PyMuPDF for PDF processing
+import fitz  # PyMuPDF
 from typing import List
 from dotenv import load_dotenv
-import chromadb
+from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, utility
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 
-# Load environment variables
 load_dotenv()
 
-# Configuration
-PERSIST_DIRECTORY = "./chroma_data"
-COLLECTION_NAME = "rag_documents_collection"
+# Constants
+MILVUS_URI = os.getenv("MILVUS_URI")
+MILVUS_TOKEN = os.getenv("MILVUS_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+COLLECTION_NAME = "pdf_chunks"
+EMBEDDING_DIM = 384
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
-# read the PDF file and extract text
-def read_pdf(file_path: str) -> str:
-    with fitz.open(file_path) as pdf_document:
-        text = ""
-        for page in pdf_document:
-            text += page.get_text()
-    return text
+# Load embedder
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Split text into chunks
-def chunk_text(text: str) -> List[str]:
+# Milvus Setup
+def connect_milvus():
+    connections.connect(
+        alias="default",
+        uri=MILVUS_URI,
+        token=MILVUS_TOKEN
+    )
+
+def create_collection() -> Collection:
+    if utility.has_collection(COLLECTION_NAME):
+        return Collection(COLLECTION_NAME)
+
+    fields = [
+        FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, auto_id=False, max_length=36),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
+        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=2048),
+        FieldSchema(name="source_file", dtype=DataType.VARCHAR, max_length=512)
+    ]
+
+    schema = CollectionSchema(fields=fields, description="RAG PDF chunks")
+    collection = Collection(name=COLLECTION_NAME, schema=schema)
+    collection.create_index("embedding", {"index_type": "IVF_FLAT", "metric_type": "COSINE", "params": {"nlist": 1024}})
+    collection.load()
+    return collection
+
+def setup_milvus() -> Collection:
+    connect_milvus()
+    return create_collection()
+
+# Document Processing
+def read_pdf(file_path: str) -> str:
+    with fitz.open(file_path) as doc:
+        return "".join([page.get_text() for page in doc])
+
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
     chunks = []
     start = 0
-    text_length = len(text)
-    while start < text_length:
-        end = min(start + CHUNK_SIZE, text_length)
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += CHUNK_SIZE - CHUNK_OVERLAP
-        if start < 0:
-            start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
     return chunks
 
-#setup ChromaDB client and collection
-def setup_chromadb():
-    os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
-    client = chromadb.PersistentClient(path=PERSIST_DIRECTORY)
-    collection = client.get_or_create_collection(name=COLLECTION_NAME)
-    print(f"ChromaDB initialized at: {PERSIST_DIRECTORY}")
-    return client, collection
-
-#take a PDF file path and store its chunks in ChromaDB
-def ingest_pdf(file_path: str, collection: chromadb.Collection):
-    if not file_path.lower().endswith(".pdf"):
-        raise ValueError("File must be a PDF.")
-    print(f"Processing PDF: {file_path}")
+def ingest_pdf(file_path: str, collection: Collection):
     base_name = os.path.basename(file_path)
-
     text = read_pdf(file_path)
-    if not text:
-        print("No text extracted from PDF.")
-        return
     chunks = chunk_text(text)
-    print(f"Generated {len(chunks)} chunks")
-
-    # Generate embeddings using sentence-transformers 
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
     vectors = embedder.encode(chunks, show_progress_bar=True)
-    ids = [str(uuid.uuid4()) for _ in chunks]
-    metadatas = [{"text": chunk, "source_file": base_name} for chunk in chunks]
-    # Store in ChromaDB
-    collection.add(
-        documents=chunks,
-        embeddings=[vec.tolist() for vec in vectors],
-        metadatas=metadatas,
-        ids=ids
-    )
-    print(f"Successfully stored {len(chunks)} chunks in ChromaDB")
 
-# Retrieve context from ChromaDB based on user query
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
-def retrieve_context(query: str, collection: chromadb.Collection, top_k: int = 3) -> str:
-    """Retrieve top-k relevant chunks from ChromaDB for the query."""
-    query_embed = embedder.encode(query).tolist()
-    results = collection.query(
-        query_embeddings=[query_embed],
-        n_results=top_k,
-        include=['documents']
-    )
-    context_snippets = results['documents'][0]
-    return "\n\n".join(context_snippets)
+    data = [
+        [str(uuid.uuid4()) for _ in chunks],
+        vectors,
+        chunks,
+        [base_name] * len(chunks)
+    ]
+    collection.insert(data)
+    collection.flush()
 
+# Context Retrieval
+def retrieve_context(query: str, collection: Collection, top_k: int = 3) -> str:
+    query_vec = embedder.encode([query])[0].tolist()
+    results = collection.search(
+        data=[query_vec],
+        anns_field="embedding",
+        param={"metric_type": "COSINE", "params": {"nprobe": 10}},
+        limit=top_k,
+        output_fields=["text"]
+    )
+    return "\n\n".join([hit.entity.get("text") for hit in results[0]])
+
+# Chatbot
 class Chatbot:
-    def __init__(self, collection: chromadb.Collection):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("Please set 'GEMINI_API_KEY' in .env file.")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash')
+    def __init__(self, collection: Collection):
+        if not GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not found in environment.")
+        genai.configure(api_key=GEMINI_API_KEY)
+        self.model = genai.GenerativeModel("gemini-2.0-flash")
         self.collection = collection
 
     def chat(self, user_message: str) -> str:
-        # Retrieve context
         context = retrieve_context(user_message, self.collection)
         prompt = (
-            "You are a helpful AI assistant. Answer questions based on the provided context. "
-            "If the context doesn't contain the answer, say you don't know. "
-            "Don't make up information.\n\n"
+            "You are a helpful AI assistant. Use the context to answer questions. "
+            "If you don't know the answer, just say so. Do not hallucinate.\n\n"
             f"Context:\n{context}\n\nUser: {user_message}"
         )
         try:
@@ -110,34 +112,3 @@ class Chatbot:
             return response.text
         except Exception as e:
             return f"Error: {e}"
-
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="RAG Chat with PDF")
-    parser.add_argument("--pdf", type=str, help="Path to PDF file to ingest")
-    args = parser.parse_args()
-    # Initialize ChromaDB
-    collection = setup_chromadb()
-    # Ingest PDF if provided
-    if args.pdf:
-        if not os.path.exists(args.pdf):
-            print(f"Error: PDF file '{args.pdf}' not found.")
-            return
-        ingest_pdf(args.pdf, collection)
-    # Start chat
-    print("\n--- Chat with your PDF ---")
-    print("Type 'exit' to quit.")
-    chatbot = Chatbot(collection)
-    while True:
-        user_input = input("\nYour question: ")
-        if user_input.lower() == 'exit':
-            print("Goodbye!")
-            break
-        if not user_input.strip():
-            print("Please enter a question.")
-            continue
-        response = chatbot.chat(user_input)
-        print(f"\nAI: {response}")
-
-if __name__ == "__main__":
-    main()

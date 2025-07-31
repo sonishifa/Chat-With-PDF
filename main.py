@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 
-from rag import setup_chromadb, ingest_pdf, Chatbot
+from rag import setup_milvus, ingest_pdf, Chatbot
 
 # Load environment variables
 load_dotenv()
@@ -24,7 +24,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 user_sessions = {}  # access_token → email
 
 # Setup RAG
-client, collection = setup_chromadb()
+collection = setup_milvus()
 chatbot = Chatbot(collection)
 
 @app.get("/")
