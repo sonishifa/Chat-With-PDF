@@ -1,9 +1,10 @@
+# main.py
 import os
 import shutil
 import requests
 from tempfile import NamedTemporaryFile
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Depends, Header
-from fastapi.responses import RedirectResponse, FileResponse, JSONResponse
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Depends, Cookie
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from urllib.parse import urlencode
@@ -20,9 +21,9 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-user_sessions = {}  # token → email
+user_sessions = {}  # access_token → email
 
-# Initialize RAG
+# Setup RAG
 client, collection = setup_chromadb()
 chatbot = Chatbot(collection)
 
@@ -30,7 +31,7 @@ chatbot = Chatbot(collection)
 def home():
     return FileResponse("static/index.html")
 
-# ---------- Google OAuth Flow ----------
+# ---------- Google OAuth ----------
 @app.get("/auth/login")
 def login():
     google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -57,6 +58,7 @@ def callback(request: Request):
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "grant_type": "authorization_code"
     })
+
     token_json = token_res.json()
     access_token = token_json.get("access_token")
     if not access_token:
@@ -66,26 +68,30 @@ def callback(request: Request):
         "https://www.googleapis.com/oauth2/v2/userinfo",
         headers={"Authorization": f"Bearer {access_token}"}
     ).json()
+
     email = user_info.get("email")
     if not email:
         raise HTTPException(status_code=400, detail="Failed to fetch user email")
 
     user_sessions[access_token] = email
     response = RedirectResponse(url="/static/index.html")
-    response.set_cookie(key="access_token", value=access_token, httponly=False)
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=True
+    )
     return response
 
 # ---------- Dependency ----------
-def get_current_user(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid Authorization header")
-    token = authorization.split(" ")[1]
-    email = user_sessions.get(token)
+def get_current_user(access_token: str = Cookie(None)):
+    email = user_sessions.get(access_token)
     if not email:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Not logged in or session expired")
     return email
 
-# ---------- PDF Upload ----------
+# ---------- Upload ----------
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...), user: str = Depends(get_current_user)):
     if file.content_type != "application/pdf":

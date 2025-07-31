@@ -1,12 +1,5 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const token = getCookie("access_token");
-  if (!token) {
-    alert("Please log in first.");
-    window.location.href = "/auth/login";
-    return;
-  }
-
-  // Upload PDF
+  // PDF upload
   document.getElementById("uploadForm").onsubmit = async (e) => {
     e.preventDefault();
     const file = document.querySelector('input[name="file"]').files[0];
@@ -20,9 +13,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const res = await fetch("/upload", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
       body: formData,
     });
 
@@ -34,7 +24,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  // Chat
+  // Chat with PDF
   document.getElementById("chatForm").onsubmit = async (e) => {
     e.preventDefault();
     const message = document.getElementById("query").value;
@@ -42,7 +32,6 @@ document.addEventListener("DOMContentLoaded", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ message }),
     });
@@ -50,10 +39,3 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("response").innerText = "AI: " + data.response;
   };
 });
-
-// Utility to read cookies
-function getCookie(name) {
-  const value = `; ${document.cookie}`;
-  const parts = value.split(`; ${name}=`);
-  return parts.length === 2 ? parts.pop().split(";").shift() : null;
-}
