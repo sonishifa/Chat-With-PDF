@@ -48,17 +48,11 @@ def setup_chromadb():
 
 #take a PDF file path and store its chunks in ChromaDB
 def ingest_pdf(file_path: str, collection: chromadb.Collection):
-    """Process PDF and store in ChromaDB."""
     if not file_path.lower().endswith(".pdf"):
         raise ValueError("File must be a PDF.")
     print(f"Processing PDF: {file_path}")
     base_name = os.path.basename(file_path)
 
-    # Check if already ingested
-    existing = collection.get(where={"source_file": base_name})
-    if existing['ids']:
-        print(f"'{base_name}' already ingested. Skipping.")
-        return
     text = read_pdf(file_path)
     if not text:
         print("No text extracted from PDF.")
@@ -81,9 +75,9 @@ def ingest_pdf(file_path: str, collection: chromadb.Collection):
     print(f"Successfully stored {len(chunks)} chunks in ChromaDB")
 
 # Retrieve context from ChromaDB based on user query
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 def retrieve_context(query: str, collection: chromadb.Collection, top_k: int = 3) -> str:
     """Retrieve top-k relevant chunks from ChromaDB for the query."""
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
     query_embed = embedder.encode(query).tolist()
     results = collection.query(
         query_embeddings=[query_embed],
@@ -123,7 +117,7 @@ def main():
     parser.add_argument("--pdf", type=str, help="Path to PDF file to ingest")
     args = parser.parse_args()
     # Initialize ChromaDB
-    client, collection = setup_chromadb()
+    collection = setup_chromadb()
     # Ingest PDF if provided
     if args.pdf:
         if not os.path.exists(args.pdf):

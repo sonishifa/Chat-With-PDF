@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Chat with PDF</title>
+</head>
+<body>
+  <h1>Welcome!</h1>
+  <a href="/auth/login">Login with Google</a>
+
+  <h3>Upload PDF</h3>
+  <form id="uploadForm">
+    <input type="file" name="file" accept="application/pdf" required />
+    <button type="submit">Upload</button>
+  </form>
+
+  <hr />
+
+  <form id="chatForm">
+    <input type="text" id="query" placeholder="Ask something..." required />
+    <button type="submit">Ask</button>
+  </form>
+
+  <div id="response" style="margin-top:20px;"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
