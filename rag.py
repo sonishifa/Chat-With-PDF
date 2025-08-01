@@ -64,8 +64,8 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
         start += chunk_size - overlap
     return chunks
 
-def ingest_pdf(file_path: str, collection: Collection):
-    base_name = os.path.basename(file_path)
+def ingest_pdf(file_path: str, collection: Collection, file_name:str):
+    base_name = file_name
     text = read_pdf(file_path)
     chunks = chunk_text(text)
     vectors = embedder.encode(chunks, show_progress_bar=True)
@@ -80,14 +80,15 @@ def ingest_pdf(file_path: str, collection: Collection):
     collection.flush()
 
 # Context Retrieval
-def retrieve_context(query: str, collection: Collection, top_k: int = 3) -> str:
+def retrieve_context(query: str, collection: Collection, file_name:str, top_k: int = 3) -> str:
     query_vec = embedder.encode([query])[0].tolist()
     results = collection.search(
         data=[query_vec],
         anns_field="embedding",
         param={"metric_type": "COSINE", "params": {"nprobe": 10}},
         limit=top_k,
-        output_fields=["text"]
+        output_fields=["text"],
+        expr=f'source_file == "{file_name}"'
     )
     return "\n\n".join([hit.entity.get("text") for hit in results[0]])
 
@@ -100,8 +101,8 @@ class Chatbot:
         self.model = genai.GenerativeModel("gemini-2.0-flash")
         self.collection = collection
 
-    def chat(self, user_message: str) -> str:
-        context = retrieve_context(user_message, self.collection)
+    def chat(self, user_message: str, file_name:str) -> str:
+        context = retrieve_context(user_message, self.collection, file_name)
         prompt = (
             "You are a helpful AI assistant. Use the context to answer questions. "
             "If you don't know the answer, just say so. Do not hallucinate.\n\n"

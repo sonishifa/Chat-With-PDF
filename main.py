@@ -9,6 +9,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from urllib.parse import urlencode
 from dotenv import load_dotenv
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
 
 from rag import setup_milvus, ingest_pdf, Chatbot
 
@@ -20,16 +22,17 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
-user_sessions = {}  # access_token → email
+user_sessions = {} 
 
 # Setup RAG
 collection = setup_milvus()
 chatbot = Chatbot(collection)
 
-@app.get("/")
-def home():
-    return FileResponse("static/index.html")
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 # ---------- Google OAuth ----------
 @app.get("/auth/login")
@@ -73,8 +76,11 @@ def callback(request: Request):
     if not email:
         raise HTTPException(status_code=400, detail="Failed to fetch user email")
 
-    user_sessions[access_token] = email
-    response = RedirectResponse(url="/static/index.html")
+    user_sessions[access_token] = {
+        "email": email,
+        "file_name": None # Store file name for context retrieval
+    }
+    response = RedirectResponse(url="/")
 
     response.set_cookie(
         key="access_token",
@@ -86,10 +92,10 @@ def callback(request: Request):
 
 # ---------- Dependency ----------
 def get_current_user(access_token: str = Cookie(None)):
-    email = user_sessions.get(access_token)
-    if not email:
+    user_data = user_sessions.get(access_token)
+    if not user_data:
         raise HTTPException(status_code=401, detail="Not logged in or session expired")
-    return email
+    return user_data
 
 # ---------- Upload ----------
 @app.post("/upload")
@@ -100,7 +106,8 @@ async def upload_pdf(file: UploadFile = File(...), user: str = Depends(get_curre
         shutil.copyfileobj(file.file, tmp)
         temp_path = tmp.name
     try:
-        ingest_pdf(temp_path, collection)
+        ingest_pdf(temp_path, collection, file.filename)
+        user["file_name"] = file.filename
         return {"status": "success", "filename": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -112,8 +119,11 @@ class ChatRequest(BaseModel):
     message: str
 
 @app.post("/chat")
-async def chat_with_pdf(request: ChatRequest, user: str = Depends(get_current_user)):
+async def chat_with_pdf(request: ChatRequest, user: dict = Depends(get_current_user)):
+    file_name = user.get("file_name")
+    if not file_name:
+        raise HTTPException(status_code=400, detail="No file uploaded yet.")
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Empty message")
-    response = chatbot.chat(request.message)
+    response = chatbot.chat(request.message, file_name)
     return {"response": response}

@@ -9,12 +9,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const formData = new FormData();
-    formData.append("file", file);
-
     const res = await fetch("/upload", {
       method: "POST",
-      body: formData,
+      body: formData.append("file", file),
     });
+
+    if (res.status === 401) {
+      alert("Please log in to upload.");
+      window.location.href = "/auth/login";
+      return;
+    }
 
     const result = await res.json();
     if (res.ok) {
@@ -28,6 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("chatForm").onsubmit = async (e) => {
     e.preventDefault();
     const message = document.getElementById("query").value;
+
     const res = await fetch("/chat", {
       method: "POST",
       headers: {
@@ -35,6 +40,13 @@ document.addEventListener("DOMContentLoaded", () => {
       },
       body: JSON.stringify({ message }),
     });
+
+    if (res.status === 401) {
+      alert("Please log in to chat.");
+      window.location.href = "/auth/login";
+      return;
+    }
+
     const data = await res.json();
     document.getElementById("response").innerText = "AI: " + data.response;
   };
